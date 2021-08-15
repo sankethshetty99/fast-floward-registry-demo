@@ -7,6 +7,20 @@ const fcl = require("@onflow/fcl");
 
 module.exports = class DappScripts {
 
+	static nft_get_nfts_in_collection() {
+		return fcl.script`
+				import NonFungibleToken from 0x01cf0e2f2f715450
+				import RegistryNFTContract from 0x01cf0e2f2f715450
+				
+				pub fun main(acct: Address): [UInt64] {
+				  let acctNFTCollectionRef = getAccount(acct).getCapability(/public/NFTCollection)
+				            .borrow<&RegistryNFTContract.Collection{NonFungibleToken.CollectionPublic}>()
+				            ?? panic("Could not borrow the public capability for the recipient's account")
+				  return acctNFTCollectionRef.getIDs()
+				}
+		`;
+	}
+
 	static flowtoken_get_balance() {
 		return fcl.script`
 				import FungibleToken from 0xee82856bf20e2aa6
@@ -36,20 +50,6 @@ module.exports = class DappScripts {
 				    ?? panic("Could not borrow the NFT from the user's collection")
 				  let metadata: {String: String} = borrowedNFT.metadata
 				  return metadata
-				}
-		`;
-	}
-
-	static nft_get_nfts_in_collection() {
-		return fcl.script`
-				import NonFungibleToken from 0x01cf0e2f2f715450
-				import RegistryNFTContract from 0x01cf0e2f2f715450
-				
-				pub fun main(acct: Address): [UInt64] {
-				  let acctNFTCollectionRef = getAccount(acct).getCapability(/public/NFTCollection)
-				            .borrow<&RegistryNFTContract.Collection{NonFungibleToken.CollectionPublic}>()
-				            ?? panic("Could not borrow the public capability for the recipient's account")
-				  return acctNFTCollectionRef.getIDs()
 				}
 		`;
 	}

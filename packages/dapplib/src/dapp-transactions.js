@@ -7,6 +7,174 @@ const fcl = require("@onflow/fcl");
 
 module.exports = class DappTransactions {
 
+	static nft_mint_nft() {
+		return fcl.transaction`
+				import NonFungibleToken from 0x01cf0e2f2f715450
+				import RegistryNFTContract from 0x01cf0e2f2f715450
+				
+				// This transction uses the NFTMinter resource to mint a new NFT.
+				//
+				// It must be run with the account that has a minter resource. In this case,
+				// we are calling the transaction with the Tenant itself because it stores
+				// an NFTMinter resource in the Tenant resource
+				
+				transaction(recipient: Address, metadata: {String: String}) {
+				    
+				    // the tenant
+				    let tenant: &RegistryNFTContract.Tenant
+				    let receiver: &RegistryNFTContract.Collection{NonFungibleToken.CollectionPublic}
+				
+				    prepare(acct: AuthAccount) {
+				
+				        self.tenant = acct.borrow<&RegistryNFTContract.Tenant{ITenantMinter}>(from: RegistryNFTContract.TenantStoragePath)
+				                        ?? panic("Could not borrow the Tenant")
+				         // borrow the recipient's public NFT collection reference
+				        self.receiver = getAccount(recipient).getCapability(/public/NFTCollection)
+				            .borrow<&RegistryNFTContract.Collection{NonFungibleToken.CollectionPublic}>()
+				            ?? panic("Could not get receiver reference to the NFT Collection")
+				        
+				    }
+				
+				    execute {
+				        // get a reference to an NFTMinter resource from the Tenant
+				        let minter = self.tenant.minterRef()
+				
+				        // mint the NFT and deposit it to the recipient's collection
+				        minter.mintNFT(tenant: self.tenant, recipient: self.receiver, metadata: metadata)
+				    }
+				}
+		`;
+	}
+
+	static nft_provision_account() {
+		return fcl.transaction`
+				import RegistryNFTContract from 0x01cf0e2f2f715450
+				import NonFungibleToken from 0x01cf0e2f2f715450
+				
+				// sets up an account (any user who wants to interact with the Marketplace)
+				// the ability to deal with NFTs. It gives them an NFT Collection
+				
+				transaction {
+				
+				  prepare(acct: AuthAccount) {
+				    // if the account doesn't already have an NFT Collection
+				    if acct.borrow<&RegistryNFTContract.Collection>(from: /storage/NFTCollection) == nil {
+				
+				      // create a new empty collection
+				      let nftCollection <- RegistryNFTContract.createEmptyCollection()
+				            
+				      // save it to the account
+				      acct.save(<-nftCollection, to: /storage/NFTCollection)
+				
+				      // create a public capability for the collection
+				      acct.link<&RegistryNFTContract.Collection{NonFungibleToken.Receiver, NonFungibleToken.CollectionPublic, RegistryNFTContract.INFTCollectionPublic}>(/public/NFTCollection, target: /storage/NFTCollection)
+				    
+				      log("Gave account an NFT Collection")
+				    }
+				  }
+				
+				  execute {
+				    
+				  }
+				}
+				
+		`;
+	}
+
+	static nft_transfer_nft() {
+		return fcl.transaction`
+				import RegistryNFTContract from 0x01cf0e2f2f715450
+				import NonFungibleToken from 0x01cf0e2f2f715450
+				
+				// This transaction is used to transfer an NFT from acct --> recipient
+				
+				transaction(id: UInt64, recipient: Address) {
+				  let giverNFTCollectionRef: &RegistryNFTContract.Collection
+				  let recipientNFTCollectionRef: &RegistryNFTContract.Collection{NonFungibleToken.CollectionPublic}
+				
+				  prepare(acct: AuthAccount) {
+				      self.giverNFTCollectionRef = acct.borrow<&RegistryNFTContract.Collection>(from: /storage/NFTCollection)
+				        ?? panic("Could not borrow the user's NFT Collection")
+				      self.recipientNFTCollectionRef = getAccount(recipient).getCapability(/public/NFTCollection)
+				          .borrow<&RegistryNFTContract.Collection{NonFungibleToken.CollectionPublic}>()
+				          ?? panic("Could not borrow the public capability for the recipient's account")
+				  } 
+				
+				  execute {
+				      let nft <- self.giverNFTCollectionRef.withdraw(withdrawID: id)
+				      
+				      self.recipientNFTCollectionRef.deposit(token: <-nft)
+				
+				      log("Transfered the NFT from the giver to the recipient")
+				  }
+				}
+		`;
+	}
+
+	static registry_nft_tenant() {
+		return fcl.transaction`
+				import RegistryNFTContract from 0x01cf0e2f2f715450
+				import RegistryService from 0x01cf0e2f2f715450
+				
+				// This transaction allows any Tenant to receive a Tenant Resource from
+				// RegistryNFTContract. It saves the resource to account storage.
+				//
+				// Note that this can only be called by someone who has already registered
+				// with the RegistryService and received an AuthNFT.
+				
+				transaction() {
+				
+				  prepare(acct: AuthAccount) {
+				    // save the Tenant resource to the account if it doesn't already exist
+				    if acct.borrow<&RegistryNFTContract.Tenant>(from: /storage/NFTContract) == nil {
+				      // borrow a reference to the AuthNFT in account storage
+				      let authNFTRef = acct.borrow<&RegistryService.AuthNFT>(from: RegistryService.AuthStoragePath)
+				                        ?? panic("Could not borrow the AuthNFT")
+				      
+				      // save the new Tenant resource from RegistryNFTContract to account storage
+				      acct.save(<-RegistryNFTContract.instance(authNFT: authNFTRef), to: RegistryNFTContract.TenantStoragePath)
+				
+				      // link the Tenant resource to the public with ITenant restrictions
+				      acct.link<&RegistryNFTContract.Tenant{RegistryNFTContract.ITenant}>(RegistryNFTContract.TenantPublicPath, target: RegistryNFTContract.TenantStoragePath)
+				    }
+				  }
+				
+				  execute {
+				    log("Registered a new Tenant for RegistryNFTContract.")
+				  }
+				}
+				
+		`;
+	}
+
+	static registry_register_with_registry() {
+		return fcl.transaction`
+				import RegistryService from 0x01cf0e2f2f715450
+				
+				// Allows a Tenant to register with the RegistryService. It will
+				// save an AuthNFT to account storage. Once an account
+				// has an AuthNFT, they can then get Tenant Resources from any contract
+				// in the Registry.
+				//
+				// Note that this only ever needs to be called once per Tenant
+				
+				transaction() {
+				
+				    prepare(acct: AuthAccount) {
+				        // if this account doesn't already have an AuthNFT...
+				        if acct.borrow<&RegistryService.AuthNFT>(from: RegistryService.AuthStoragePath) == nil {
+				            // save a new AuthNFT to account storage
+				            acct.save(<-RegistryService.register(), to: RegistryService.AuthStoragePath)  
+				        }
+				    }
+				
+				    execute {
+				
+				    }
+				}
+		`;
+	}
+
 	static marketplace_buy_nft() {
 		return fcl.transaction`
 				import FungibleToken from 0xee82856bf20e2aa6
@@ -118,174 +286,6 @@ module.exports = class DappTransactions {
 				        log("Gave account a Sale Collection")
 				    }
 				    
-				}
-		`;
-	}
-
-	static nft_mint_nft() {
-		return fcl.transaction`
-				import NonFungibleToken from 0x01cf0e2f2f715450
-				import RegistryNFTContract from 0x01cf0e2f2f715450
-				
-				// This transction uses the NFTMinter resource to mint a new NFT.
-				//
-				// It must be run with the account that has a minter resource. In this case,
-				// we are calling the transaction with the Tenant itself because it stores
-				// an NFTMinter resource in the Tenant resource
-				
-				transaction(recipient: Address, metadata: {String: String}) {
-				    
-				    // the tenant
-				    let tenant: &RegistryNFTContract.Tenant
-				    let receiver: &RegistryNFTContract.Collection{NonFungibleToken.CollectionPublic}
-				
-				    prepare(acct: AuthAccount) {
-				
-				        self.tenant = acct.borrow<&RegistryNFTContract.Tenant>(from: RegistryNFTContract.TenantStoragePath)
-				                        ?? panic("Could not borrow the Tenant")
-				         // borrow the recipient's public NFT collection reference
-				        self.receiver = getAccount(recipient).getCapability(/public/NFTCollection)
-				            .borrow<&RegistryNFTContract.Collection{NonFungibleToken.CollectionPublic}>()
-				            ?? panic("Could not get receiver reference to the NFT Collection")
-				        
-				    }
-				
-				    execute {
-				        // get a reference to an NFTMinter resource from the Tenant
-				        let minter = self.tenant.minterRef()
-				
-				        // mint the NFT and deposit it to the recipient's collection
-				        minter.mintNFT(tenant: self.tenant, recipient: self.receiver, metadata: metadata)
-				    }
-				}
-		`;
-	}
-
-	static nft_provision_account() {
-		return fcl.transaction`
-				import RegistryNFTContract from 0x01cf0e2f2f715450
-				import NonFungibleToken from 0x01cf0e2f2f715450
-				
-				// sets up an account (any user who wants to interact with the Marketplace)
-				// the ability to deal with NFTs. It gives them an NFT Collection
-				
-				transaction {
-				
-				  prepare(acct: AuthAccount) {
-				    // if the account doesn't already have an NFT Collection
-				    if acct.borrow<&RegistryNFTContract.Collection>(from: /storage/NFTCollection) == nil {
-				
-				      // create a new empty collection
-				      let nftCollection <- RegistryNFTContract.createEmptyCollection()
-				            
-				      // save it to the account
-				      acct.save(<-nftCollection, to: /storage/NFTCollection)
-				
-				      // create a public capability for the collection
-				      acct.link<&RegistryNFTContract.Collection{NonFungibleToken.Receiver, NonFungibleToken.CollectionPublic, RegistryNFTContract.INFTCollectionPublic}>(/public/NFTCollection, target: /storage/NFTCollection)
-				    
-				      log("Gave account an NFT Collection")
-				    }
-				  }
-				
-				  execute {
-				    
-				  }
-				}
-				
-		`;
-	}
-
-	static registry_nft_tenant() {
-		return fcl.transaction`
-				import RegistryNFTContract from 0x01cf0e2f2f715450
-				import RegistryService from 0x01cf0e2f2f715450
-				
-				// This transaction allows any Tenant to receive a Tenant Resource from
-				// RegistryNFTContract. It saves the resource to account storage.
-				//
-				// Note that this can only be called by someone who has already registered
-				// with the RegistryService and received an AuthNFT.
-				
-				transaction() {
-				
-				  prepare(acct: AuthAccount) {
-				    // save the Tenant resource to the account if it doesn't already exist
-				    if acct.borrow<&RegistryNFTContract.Tenant>(from: /storage/NFTContract) == nil {
-				      // borrow a reference to the AuthNFT in account storage
-				      let authNFTRef = acct.borrow<&RegistryService.AuthNFT>(from: RegistryService.AuthStoragePath)
-				                        ?? panic("Could not borrow the AuthNFT")
-				      
-				      // save the new Tenant resource from RegistryNFTContract to account storage
-				      acct.save(<-RegistryNFTContract.instance(authNFT: authNFTRef), to: RegistryNFTContract.TenantStoragePath)
-				
-				      // link the Tenant resource to the public with ITenant restrictions
-				      acct.link<&RegistryNFTContract.Tenant{RegistryNFTContract.ITenant}>(RegistryNFTContract.TenantPublicPath, target: RegistryNFTContract.TenantStoragePath)
-				    }
-				  }
-				
-				  execute {
-				    log("Registered a new Tenant for RegistryNFTContract.")
-				  }
-				}
-				
-		`;
-	}
-
-	static nft_transfer_nft() {
-		return fcl.transaction`
-				import RegistryNFTContract from 0x01cf0e2f2f715450
-				import NonFungibleToken from 0x01cf0e2f2f715450
-				
-				// This transaction is used to transfer an NFT from acct --> recipient
-				
-				transaction(id: UInt64, recipient: Address) {
-				  let giverNFTCollectionRef: &RegistryNFTContract.Collection
-				  let recipientNFTCollectionRef: &RegistryNFTContract.Collection{NonFungibleToken.CollectionPublic}
-				
-				  prepare(acct: AuthAccount) {
-				      self.giverNFTCollectionRef = acct.borrow<&RegistryNFTContract.Collection>(from: /storage/NFTCollection)
-				        ?? panic("Could not borrow the user's NFT Collection")
-				      self.recipientNFTCollectionRef = getAccount(recipient).getCapability(/public/NFTCollection)
-				          .borrow<&RegistryNFTContract.Collection{NonFungibleToken.CollectionPublic}>()
-				          ?? panic("Could not borrow the public capability for the recipient's account")
-				  } 
-				
-				  execute {
-				      let nft <- self.giverNFTCollectionRef.withdraw(withdrawID: id)
-				      
-				      self.recipientNFTCollectionRef.deposit(token: <-nft)
-				
-				      log("Transfered the NFT from the giver to the recipient")
-				  }
-				}
-		`;
-	}
-
-	static registry_register_with_registry() {
-		return fcl.transaction`
-				import RegistryService from 0x01cf0e2f2f715450
-				
-				// Allows a Tenant to register with the RegistryService. It will
-				// save an AuthNFT to account storage. Once an account
-				// has an AuthNFT, they can then get Tenant Resources from any contract
-				// in the Registry.
-				//
-				// Note that this only ever needs to be called once per Tenant
-				
-				transaction() {
-				
-				    prepare(acct: AuthAccount) {
-				        // if this account doesn't already have an AuthNFT...
-				        if acct.borrow<&RegistryService.AuthNFT>(from: RegistryService.AuthStoragePath) == nil {
-				            // save a new AuthNFT to account storage
-				            acct.save(<-RegistryService.register(), to: RegistryService.AuthStoragePath)  
-				        }
-				    }
-				
-				    execute {
-				
-				    }
 				}
 		`;
 	}
